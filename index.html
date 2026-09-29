@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#17324d">
+  <meta name="description" content="Levantamiento de equipos computacionales.">
+  <title>Levantamiento TI</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<header class="app-header">
+  <div>
+    <div class="eyebrow">LEVANTAMIENTO TI</div>
+    <h1>Equipos computacionales</h1>
+    <p>Registro local para Dalcahue, Ilque y Quellón.</p>
+  </div>
+  <button id="installBtn" class="button secondary hidden" type="button">Instalar</button>
+</header>
+
+<nav class="nav">
+  <button class="nav-btn active" data-view="registro" type="button">Registrar</button>
+  <button class="nav-btn" data-view="inventario" type="button">Inventario</button>
+  <button class="nav-btn" data-view="configuracion" type="button">Configuración</button>
+</nav>
+
+<main class="shell">
+  <section id="view-registro" class="view active">
+    <div class="summary">
+      <div class="summary-card"><span>Total</span><strong id="totalCount">0</strong></div>
+      <div class="summary-card"><span>Operativos</span><strong id="okCount">0</strong></div>
+      <div class="summary-card"><span>Revisión</span><strong id="reviewCount">0</strong></div>
+    </div>
+
+    <section class="panel">
+      <div class="heading">
+        <div>
+          <div class="eyebrow">NUEVO EQUIPO</div>
+          <h2 id="formTitle">Registrar equipo</h2>
+        </div>
+        <button id="cancelEdit" class="text-btn hidden" type="button">Cancelar</button>
+      </div>
+
+      <form id="equipmentForm" autocomplete="off">
+        <input type="hidden" id="recordId">
+
+        <div class="grid two">
+          <label class="field">
+            <span>Sucursal *</span>
+            <select id="sucursal" required></select>
+          </label>
+          <label class="field">
+            <span>Descripción *</span>
+            <select id="descripcion" required></select>
+          </label>
+        </div>
+
+        <div class="grid two">
+          <label class="field">
+            <span>ID dispositivo</span>
+            <input id="idDispositivo" placeholder="UUID, Service Tag o identificador">
+          </label>
+          <label class="field">
+            <span>Nombre del dispositivo *</span>
+            <input id="nombreDispositivo" placeholder="Ej. PC-CONTROLPRODUCCION" required>
+          </label>
+        </div>
+
+        <div class="grid two">
+          <label class="field">
+            <span>Ubicación / cargo</span>
+            <input id="ubicacionCargo" placeholder="Ej. Control Producción">
+          </label>
+          <label class="field">
+            <span>Producto / modelo</span>
+            <input id="producto" placeholder="Ej. Torre Clio CL-5930">
+          </label>
+        </div>
+
+        <div class="grid two">
+          <label class="field">
+            <span>Sistema operativo</span>
+            <select id="sistemaOperativo"></select>
+          </label>
+          <label class="field">
+            <span>RAM</span>
+            <input id="ram" placeholder="Ej. 8 GB">
+          </label>
+        </div>
+
+        <div class="grid two">
+          <label class="field">
+            <span>Disco duro / SSD</span>
+            <input id="discoDuro" placeholder="Ej. SSD 477 GB">
+          </label>
+          <label class="field">
+            <span>Estado</span>
+            <select id="estado"></select>
+          </label>
+        </div>
+
+        <details class="credentials">
+          <summary>Credenciales del equipo</summary>
+          <p class="warning">Estos datos se almacenan localmente en este teléfono. No se envían a GitHub. Evita compartir el respaldo si contiene contraseñas.</p>
+          <div class="grid two">
+            <label class="field">
+              <span>Contraseña de inicio</span>
+              <input id="contrasenaInicio" type="password" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>Usuario administrador</span>
+              <input id="usuarioAdmin" autocomplete="off">
+            </label>
+          </div>
+          <label class="field">
+            <span>Contraseña administrador</span>
+            <input id="contrasenaAdmin" type="password" autocomplete="off">
+          </label>
+        </details>
+
+        <details class="photo-section">
+          <summary>Fotografía del equipo (opcional)</summary>
+          <p class="muted">Puedes fotografiar la etiqueta, el equipo o la pantalla con información del sistema.</p>
+          <label class="button secondary file-button">
+            Tomar fotografía
+            <input id="photoInput" type="file" accept="image/*" capture="environment">
+          </label>
+          <div id="photoPreviewWrap" class="photo-preview-wrap hidden">
+            <img id="photoPreview" alt="Vista previa">
+            <button id="removePhoto" class="text-btn" type="button">Quitar fotografía</button>
+          </div>
+        </details>
+
+        <button class="button primary large" type="submit">Guardar y siguiente</button>
+      </form>
+    </section>
+  </section>
+
+  <section id="view-inventario" class="view">
+    <section class="panel">
+      <div class="heading">
+        <div>
+          <div class="eyebrow">INVENTARIO</div>
+          <h2>Equipos registrados</h2>
+        </div>
+        <span id="inventoryCount" class="pill">0 equipos</span>
+      </div>
+
+      <div class="filters">
+        <input id="search" type="search" placeholder="Buscar equipo, sucursal, ubicación, modelo...">
+        <select id="filterSucursal"></select>
+        <select id="filterEstado"></select>
+      </div>
+
+      <div id="records" class="records"></div>
+    </section>
+
+    <section class="panel">
+      <div class="eyebrow">EXPORTACIÓN</div>
+      <h2>Entregar inventario</h2>
+      <p class="muted">El botón Excel genera un archivo .xlsx real, con todas las columnas del levantamiento. Las fotografías no se insertan dentro del Excel; se mantienen en el respaldo local.</p>
+      <div class="button-grid">
+        <button id="exportExcel" class="button primary" type="button">Exportar Excel (.xlsx)</button>
+        <button id="exportBackup" class="button secondary" type="button">Crear respaldo completo</button>
+        <label class="button secondary file-button">Importar respaldo<input id="importBackup" type="file" accept=".json,application/json"></label>
+        <button id="deleteAll" class="button danger" type="button">Borrar inventario</button>
+      </div>
+    </section>
+  </section>
+
+  <section id="view-configuracion" class="view">
+    <section class="panel">
+      <div class="eyebrow">CONFIGURACIÓN</div>
+      <h2>Sucursales</h2>
+      <p class="muted">Puedes agregar, renombrar o eliminar sucursales sin modificar el código.</p>
+      <form id="branchForm" class="inline-form">
+        <input id="newBranch" placeholder="Ej. Puerto Montt" required>
+        <button class="button primary" type="submit">Agregar</button>
+      </form>
+      <div id="branchList" class="settings-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="eyebrow">LISTAS</div>
+      <h2>Descripción</h2>
+      <form id="descForm" class="inline-form">
+        <input id="newDesc" placeholder="Ej. Notebook" required>
+        <button class="button primary" type="submit">Agregar</button>
+      </form>
+      <div id="descList" class="settings-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="eyebrow">LISTAS</div>
+      <h2>Sistema operativo</h2>
+      <form id="osForm" class="inline-form">
+        <input id="newOs" placeholder="Ej. Windows 11 Pro" required>
+        <button class="button primary" type="submit">Agregar</button>
+      </form>
+      <div id="osList" class="settings-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="eyebrow">LISTAS</div>
+      <h2>Estado</h2>
+      <form id="statusForm" class="inline-form">
+        <input id="newStatus" placeholder="Ej. Backup" required>
+        <button class="button primary" type="submit">Agregar</button>
+      </form>
+      <div id="statusList" class="settings-list"></div>
+    </section>
+
+    <p class="privacy-note">Los datos y fotografías se guardan localmente en el dispositivo. La aplicación no sincroniza automáticamente con GitHub Pages.</p>
+  </section>
+</main>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="heading">
+      <h2 id="modalTitle">Fotografía</h2>
+      <button id="closeModal" class="text-btn" type="button">Cerrar</button>
+    </div>
+    <img id="modalImage" class="modal-image" alt="Fotografía del equipo">
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+<script src="./app.js"></script>
+</body>
+</html>
