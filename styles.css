@@ -69,3 +69,9 @@ input:focus,select:focus{border-color:var(--navy2);box-shadow:0 0 0 3px rgba(40,
 .credentials summary{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .summary-hint{color:var(--muted);font-size:.78rem;font-weight:400}
 @media(max-width:700px){.panel{padding:15px}.form-section-heading{padding-top:13px}}
+.cloud-auth-form{display:grid;grid-template-columns:1fr 1fr;gap:0 12px;margin-top:16px}
+.cloud-auth-form .field{margin-bottom:8px}
+.cloud-auth-actions{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px}
+.cloud-actions{margin-top:6px}
+.cloud-status{margin:12px 0;color:var(--navy);font-size:.88rem;font-weight:700;overflow-wrap:anywhere}
+@media(max-width:600px){.cloud-auth-form{grid-template-columns:1fr}.cloud-auth-actions{grid-column:auto}.cloud-auth-actions .button{flex:1}}

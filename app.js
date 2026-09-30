@@ -3,6 +3,7 @@ const DB_VERSION=1;
 const STORE="equipos";
 const SETTINGS_KEY="levantamiento_ti_settings_v11";
 const DRAFT_KEY="levantamiento_ti_draft_v11";
+const DELETED_SYNC_KEY="levantamiento_ti_deleted_sync_v1";
 
 const DEFAULTS={
   sucursales:["Dalcahue","Ilque","Quellón"],
@@ -20,6 +21,8 @@ let selectedPhoto=null;
 let existingPhoto=null;
 let installEvent=null;
 let supabaseClient=null;
+let cloudUser=null;
+let cloudSyncInProgress=false;
 
 const SUPABASE_CONFIG=(typeof window!=="undefined"&&window.SUPABASE_CONFIG)?window.SUPABASE_CONFIG:null;
 if(SUPABASE_CONFIG&&SUPABASE_CONFIG.url&&SUPABASE_CONFIG.anonKey&&window.supabase){
@@ -201,30 +204,171 @@ async function fillFromOcr(file){
   }catch(err){console.error(err);toast("No se pudo leer la imagen. Prueba con una foto más nítida.")}
 }
 
-async function syncRecordToSupabase(record){
-  if(!supabaseClient || !SUPABASE_CONFIG || !SUPABASE_CONFIG.url || !SUPABASE_CONFIG.anonKey){return false;}
+function newSyncId(){
+  if(crypto.randomUUID)return crypto.randomUUID();
+  const bytes=crypto.getRandomValues(new Uint8Array(16));
+  bytes[6]=(bytes[6]&0x0f)|0x40;bytes[8]=(bytes[8]&0x3f)|0x80;
+  return [...bytes].map((byte,index)=>`${[4,6,8,10].includes(index)?"-":""}${byte.toString(16).padStart(2,"0")}`).join("");
+}
+
+function queuedCloudDeletes(){
+  try{return JSON.parse(localStorage.getItem(DELETED_SYNC_KEY)||"[]")}catch{return []}
+}
+
+function queueCloudDelete(record){
+  if(!record?.sync_id||!record?.sync_user_id)return;
+  const queued=queuedCloudDeletes();
+  if(!queued.some(item=>item.syncId===record.sync_id&&item.userId===record.sync_user_id)){
+    queued.push({syncId:record.sync_id,userId:record.sync_user_id});
+    localStorage.setItem(DELETED_SYNC_KEY,JSON.stringify(queued));
+  }
+}
+
+async function clearLocalRecordsAndQueueCloudDeletes(){
+  (await allRecords()).forEach(queueCloudDelete);
+  await clearRecords();
+}
+
+function cloudPayload(record,userId){
+  return {
+    sync_id:record.sync_id,
+    user_id:userId,
+    sucursal:record.sucursal||null,
+    descripcion:record.descripcion||null,
+    id_dispositivo:record.idDispositivo||null,
+    nombre_dispositivo:record.nombreDispositivo||null,
+    ubicacion_cargo:record.ubicacionCargo||null,
+    producto:record.producto||null,
+    procesador:record.procesador||null,
+    sistema_operativo:record.sistemaOperativo||null,
+    ram:record.ram||null,
+    disco_duro:record.discoDuro||null,
+    contrasena_inicio:record.contrasenaInicio||null,
+    usuario_admin:record.usuarioAdmin||null,
+    contrasena_admin:record.contrasenaAdmin||null,
+    estado:record.estado||null,
+    created_at:record.createdAt||new Date().toISOString(),
+    updated_at:record.updatedAt||new Date().toISOString()
+  };
+}
+
+function cloudRowToLocal(row,existing={}){
+  return {
+    ...existing,
+    sync_id:row.sync_id,
+    sync_user_id:row.user_id,
+    sucursal:row.sucursal||"",
+    descripcion:row.descripcion||"",
+    idDispositivo:row.id_dispositivo||"",
+    nombreDispositivo:row.nombre_dispositivo||"",
+    ubicacionCargo:row.ubicacion_cargo||"",
+    producto:row.producto||"",
+    procesador:row.procesador||"",
+    sistemaOperativo:row.sistema_operativo||"",
+    ram:row.ram||"",
+    discoDuro:row.disco_duro||"",
+    contrasenaInicio:row.contrasena_inicio||"",
+    usuarioAdmin:row.usuario_admin||"",
+    contrasenaAdmin:row.contrasena_admin||"",
+    estado:row.estado||"",
+    createdAt:row.created_at||existing.createdAt||new Date().toISOString(),
+    updatedAt:row.updated_at||existing.updatedAt||new Date().toISOString(),
+    photoBlob:existing.photoBlob||null
+  };
+}
+
+function timestamp(value){const parsed=Date.parse(value||"");return Number.isNaN(parsed)?0:parsed}
+
+function setCloudStatus(message){
+  const status=$("cloudStatus");
+  if(status)status.textContent=message;
+}
+
+function updateCloudControls(){
+  const configured=Boolean(supabaseClient);
+  const authForm=$("cloudAuthForm");
+  if(authForm)authForm.classList.toggle("hidden",!configured||Boolean(cloudUser));
+  $("cloudSignOut")?.classList.toggle("hidden",!configured||!cloudUser);
+  const syncButton=$("cloudSync");
+  if(syncButton)syncButton.disabled=!configured||!cloudUser||cloudSyncInProgress;
+  if(!configured)setCloudStatus("Sin configurar: falta la conexión segura con Supabase.");
+  else if(cloudUser)setCloudStatus(`Sesión iniciada: ${cloudUser.email||"cuenta autenticada"}`);
+  else setCloudStatus("Inicia sesión para sincronizar con este dispositivo.");
+}
+
+async function initializeCloudAuth(){
+  if(!supabaseClient){updateCloudControls();return;}
+  supabaseClient.auth.onAuthStateChange((_event,session)=>{
+    cloudUser=session?.user||null;
+    updateCloudControls();
+  });
+  const {data,error}=await supabaseClient.auth.getSession();
+  if(error)throw error;
+  cloudUser=data.session?.user||null;
+  updateCloudControls();
+}
+
+async function synchronizeRecords({silent=false}={}){
+  if(!supabaseClient||!cloudUser){
+    setCloudStatus("Inicia sesión con Supabase antes de sincronizar.");
+    if(!silent)toast("Inicia sesión antes de sincronizar.");
+    return false;
+  }
+  if(cloudSyncInProgress)return false;
+  cloudSyncInProgress=true;updateCloudControls();setCloudStatus("Sincronizando registros...");
   try{
-    const payload={
-      sucursal:record.sucursal||null,
-      descripcion:record.descripcion||null,
-      id_dispositivo:record.idDispositivo||null,
-      nombre_dispositivo:record.nombreDispositivo||null,
-      ubicacion_cargo:record.ubicacionCargo||null,
-      producto:record.producto||null,
-      procesador:record.procesador||null,
-      sistema_operativo:record.sistemaOperativo||null,
-      ram:record.ram||null,
-      disco_duro:record.discoDuro||null,
-      contrasena_inicio:record.contrasenaInicio||null,
-      usuario_admin:record.usuarioAdmin||null,
-      contrasena_admin:record.contrasenaAdmin||null,
-      estado:record.estado||null,
-      updated_at:new Date().toISOString()
-    };
-    const { error } = await supabaseClient.from("equipos").insert(payload);
-    if(error){throw error;}
+    const userId=cloudUser.id;
+    const queued=queuedCloudDeletes();
+    const userDeletes=queued.filter(item=>item.userId===userId);
+    if(userDeletes.length){
+      const {error}=await supabaseClient.from("equipos").delete().eq("user_id",userId).in("sync_id",userDeletes.map(item=>item.syncId));
+      if(error)throw error;
+      localStorage.setItem(DELETED_SYNC_KEY,JSON.stringify(queued.filter(item=>item.userId!==userId)));
+    }
+
+    let local=await allRecords();
+    for(const record of local){
+      if(record.sync_user_id&&record.sync_user_id!==userId)throw new Error("Hay registros locales vinculados a otra cuenta. No se subió ni mezcló ningún dato.");
+      if(!record.sync_id)record.sync_id=newSyncId();
+      record.sync_user_id=userId;
+      await putRecord(record);
+    }
+
+    let {data:remote,error}=await supabaseClient.from("equipos").select("*").eq("user_id",userId);
+    if(error)throw error;
+    const remoteById=new Map((remote||[]).map(record=>[record.sync_id,record]));
+    const push=[];
+    for(const record of local){
+      const cloud=remoteById.get(record.sync_id);
+      if(!cloud||timestamp(record.updatedAt)>=timestamp(cloud.updated_at))push.push(cloudPayload(record,userId));
+      else await putRecord(cloudRowToLocal(cloud,record));
+    }
+    for(let start=0;start<push.length;start+=250){
+      const {error:upsertError}=await supabaseClient.from("equipos").upsert(push.slice(start,start+250),{onConflict:"sync_id"});
+      if(upsertError)throw upsertError;
+    }
+
+    const {data:latest,error:downloadError}=await supabaseClient.from("equipos").select("*").eq("user_id",userId);
+    if(downloadError)throw downloadError;
+    const localById=new Map((await allRecords()).map(record=>[record.sync_id,record]));
+    for(const row of latest||[]){
+      const existing=localById.get(row.sync_id);
+      const record=cloudRowToLocal(row,existing||{});
+      if(existing){record.id=existing.id;await putRecord(record);}
+      else await addRecord(record);
+    }
+    await renderRecords();await updateSummary();
+    const message=`Sincronizado: ${local.length} registros enviados o revisados; ${Math.max(0,(latest||[]).length-local.length)} descargados.`;
+    setCloudStatus(message);
+    if(!silent)toast("Sincronización completada.");
     return true;
-  }catch(err){console.error(err);return false;}
+  }catch(error){
+    console.error(error);
+    const message=error.message||"No se pudo sincronizar. Revisa la migración y las políticas de Supabase.";
+    setCloudStatus(`Error de sincronización: ${message}`);
+    if(!silent)toast("No se pudo sincronizar. Revisa la conexión y la configuración.");
+    return false;
+  }finally{cloudSyncInProgress=false;updateCloudControls();}
 }
 
 function restoreDraft(){
@@ -268,16 +412,17 @@ $("equipmentForm").addEventListener("submit",async e=>{
   if(!values.sucursal||!values.descripcion||!values.nombreDispositivo){toast("Completa los campos obligatorios.");return}
   const now=new Date().toISOString();
   const id=$("recordId").value?Number($("recordId").value):null;
-  const record={...values,photoBlob:selectedPhoto||existingPhoto||null,updatedAt:now};
 
   try{
-    if(id){const old=await getRecord(id);record.id=id;record.createdAt=old.createdAt||now;await putRecord(record);toast("Equipo actualizado.")}
-    else{record.createdAt=now;await addRecord(record);toast("Equipo guardado.")}
-    if(supabaseClient){await syncRecordToSupabase(values);}
+    const old=id?await getRecord(id):null;
+    const record={...values,...(old?{sync_id:old.sync_id,sync_user_id:old.sync_user_id,createdAt:old.createdAt||now}:{createdAt:now}),photoBlob:selectedPhoto||existingPhoto||null,updatedAt:now};
+    if(id){record.id=id;await putRecord(record);toast("Equipo actualizado.")}
+    else{await addRecord(record);toast("Equipo guardado.")}
     const branch=values.sucursal;
     clearForm(true);
     if(settings.sucursales.includes(branch))$("sucursal").value=branch;
     await updateSummary();
+    if(cloudUser)await synchronizeRecords({silent:true});
   }catch(err){console.error(err);toast("No se pudo guardar el registro.")}
 });
 
@@ -363,7 +508,9 @@ $("records").addEventListener("click",async e=>{
   if(action==="delete"){
     const r=await getRecord(id);if(!r)return;
     if(!confirm(`¿Eliminar ${r.nombreDispositivo}?`))return;
-    await removeRecord(id);await renderRecords();await updateSummary();toast("Registro eliminado.")
+    queueCloudDelete(r);await removeRecord(id);await renderRecords();await updateSummary();
+    if(cloudUser)await synchronizeRecords({silent:true});
+    toast("Registro eliminado.")
   }
 });
 $("search").addEventListener("input",renderRecords);
@@ -514,7 +661,7 @@ $("importExcel").addEventListener("change",async e=>{
     rows.forEach(r=>{const rec=excelRowToRecord(r);if(rec)records.push(rec)});
     if(!records.length) throw new Error("No se encontraron filas válidas.");
     const replace=confirm("¿Reemplazar el inventario actual?\nAceptar = reemplazar\nCancelar = agregar");
-    if(replace)await clearRecords();
+    if(replace)await clearLocalRecordsAndQueueCloudDeletes();
     for(const record of records){
       await addRecord({
         ...record,
@@ -526,6 +673,7 @@ $("importExcel").addEventListener("change",async e=>{
     e.target.value="";
     await renderRecords();
     await updateSummary();
+    if(cloudUser)await synchronizeRecords({silent:true});
     toast(`Se importaron ${records.length} equipos desde Excel.`);
   }catch(err){console.error(err);e.target.value="";toast("Excel inválido o sin registros compatibles.")}
 });
@@ -542,19 +690,23 @@ $("importBackup").addEventListener("change",async e=>{
   try{
     const p=JSON.parse(await file.text());if(!Array.isArray(p.records))throw new Error();
     const replace=confirm("¿Reemplazar el inventario actual?\nAceptar = reemplazar\nCancelar = agregar");
-    if(replace)await clearRecords();
+    if(replace)await clearLocalRecordsAndQueueCloudDeletes();
     if(p.settings&&confirm("El respaldo incluye listas de configuración. ¿Importarlas también?")){settings=p.settings;saveSettings()}
     for(const r of p.records){
       await addRecord({...r,photoBlob:dataURLToBlob(r.photoDataURL),photoDataURL:undefined});
     }
-    e.target.value="";renderFormSelects();renderSettings();await renderRecords();await updateSummary();toast("Respaldo importado.")
+    e.target.value="";renderFormSelects();renderSettings();await renderRecords();await updateSummary();
+    if(cloudUser)await synchronizeRecords({silent:true});
+    toast("Respaldo importado.")
   }catch(err){console.error(err);e.target.value="";toast("Respaldo inválido.")}
 });
 
 $("deleteAll").addEventListener("click",async()=>{
   if(!confirm("¿Borrar todo el inventario de este teléfono?"))return;
   if(!confirm("Esta acción no se puede deshacer. ¿Continuar?"))return;
-  await clearRecords();clearForm(false);await renderRecords();await updateSummary();toast("Inventario borrado.")
+  await clearLocalRecordsAndQueueCloudDeletes();clearForm(false);await renderRecords();await updateSummary();
+  if(cloudUser)await synchronizeRecords({silent:true});
+  toast("Inventario borrado.")
 });
 
 $("closeModal").addEventListener("click",()=>$("modal").classList.add("hidden"));
@@ -574,6 +726,35 @@ document.addEventListener("click",e=>{
   if(!confirm(`¿Eliminar "${settings[key][i]}" de la lista?`))return;
   settings[key].splice(i,1);saveSettings();renderSettings();renderFormSelects();toast("Elemento eliminado.")
 });
+
+$("cloudAuthForm").addEventListener("submit",async e=>{
+  e.preventDefault();
+  if(!supabaseClient){setCloudStatus("La app no tiene conexión con Supabase configurada.");return;}
+  try{
+    const {data,error}=await supabaseClient.auth.signInWithPassword({email:$("cloudEmail").value.trim(),password:$("cloudPassword").value});
+    if(error)throw error;
+    cloudUser=data.user;$("cloudPassword").value="";updateCloudControls();toast("Sesión iniciada.");
+  }catch(error){setCloudStatus(error.message||"No se pudo iniciar sesión.");}
+});
+
+$("cloudSignUp").addEventListener("click",async()=>{
+  if(!supabaseClient){setCloudStatus("La app no tiene conexión con Supabase configurada.");return;}
+  try{
+    const {data,error}=await supabaseClient.auth.signUp({email:$("cloudEmail").value.trim(),password:$("cloudPassword").value});
+    if(error)throw error;
+    if(data.session){cloudUser=data.user;$("cloudPassword").value="";updateCloudControls();setCloudStatus("Cuenta creada e iniciada.");}
+    else setCloudStatus("Cuenta creada. Confirma el correo y luego inicia sesión.");
+  }catch(error){setCloudStatus(error.message||"No se pudo crear la cuenta.");}
+});
+
+$("cloudSignOut").addEventListener("click",async()=>{
+  if(!supabaseClient)return;
+  const {error}=await supabaseClient.auth.signOut();
+  if(error){setCloudStatus(error.message);return;}
+  cloudUser=null;updateCloudControls();
+});
+
+$("cloudSync").addEventListener("click",()=>synchronizeRecords());
 
 window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();installEvent=e;$("installBtn").classList.remove("hidden")});
 $("installBtn").addEventListener("click",async()=>{if(!installEvent)return;installEvent.prompt();await installEvent.userChoice;installEvent=null;$("installBtn").classList.add("hidden")});
@@ -595,4 +776,4 @@ if("serviceWorker" in navigator){
   });
 }
 
-(async()=>{try{await openDB();renderFormSelects({estado:settings.estados[0]||""});renderSettings();restoreDraft();await updateSummary()}catch(e){console.error(e);alert("No se pudo iniciar el almacenamiento local.")}})();
+(async()=>{try{await openDB();renderFormSelects({estado:settings.estados[0]||""});renderSettings();restoreDraft();await updateSummary();try{await initializeCloudAuth()}catch(error){console.error(error);setCloudStatus("No se pudo comprobar la sesión de Supabase.")}}catch(e){console.error(e);alert("No se pudo iniciar el almacenamiento local.")}})();

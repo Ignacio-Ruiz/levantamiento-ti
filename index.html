@@ -188,6 +188,32 @@
   </section>
 
   <section id="view-configuracion" class="view">
+    <section class="panel cloud-panel">
+      <div class="eyebrow">CUENTA Y DATOS</div>
+      <h2>Sincronización protegida</h2>
+      <p class="muted">Crea una cuenta y usa la misma en el PC y el teléfono. La sincronización combina altas y cambios usando la actualización más reciente.</p>
+      <form id="cloudAuthForm" class="cloud-auth-form">
+        <label class="field">
+          <span>Correo electrónico</span>
+          <input id="cloudEmail" type="email" autocomplete="username" required>
+        </label>
+        <label class="field">
+          <span>Contraseña de la cuenta</span>
+          <input id="cloudPassword" type="password" autocomplete="current-password" minlength="8" required>
+        </label>
+        <div class="cloud-auth-actions">
+          <button class="button primary" type="submit">Iniciar sesión</button>
+          <button id="cloudSignUp" class="button secondary" type="button">Crear cuenta</button>
+        </div>
+      </form>
+      <div class="button-grid cloud-actions">
+        <button id="cloudSync" class="button primary" type="button" disabled>Sincronizar ahora</button>
+        <button id="cloudSignOut" class="button secondary hidden" type="button">Cerrar sesión</button>
+      </div>
+      <p id="cloudStatus" class="cloud-status" role="status" aria-live="polite">Comprobando configuración...</p>
+      <p class="warning">Los registros y las contraseñas se guardan en Supabase protegidos por la cuenta. Las fotografías y las listas de configuración permanecen en cada dispositivo.</p>
+    </section>
+
     <section class="panel">
       <div class="eyebrow">CONFIGURACIÓN</div>
       <h2>Sucursales</h2>
@@ -229,7 +255,7 @@
       <div id="statusList" class="settings-list"></div>
     </section>
 
-    <p class="privacy-note">Los datos y fotografías se guardan localmente en el dispositivo. La aplicación no sincroniza automáticamente con GitHub Pages.</p>
+    <p class="privacy-note">Los registros se guardan localmente y, con una sesión de Supabase, se sincronizan entre dispositivos. Las fotografías y las listas de configuración permanecen en cada dispositivo.</p>
   </section>
 </main>
 
