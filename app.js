@@ -2,6 +2,7 @@ const DB_NAME="levantamiento_ti_db";
 const DB_VERSION=1;
 const STORE="equipos";
 const SETTINGS_KEY="levantamiento_ti_settings_v11";
+const DRAFT_KEY="levantamiento_ti_draft_v11";
 
 const DEFAULTS={
   sucursales:["Dalcahue","Ilque","Quellón"],
@@ -18,6 +19,12 @@ let db;
 let selectedPhoto=null;
 let existingPhoto=null;
 let installEvent=null;
+let supabaseClient=null;
+
+const SUPABASE_CONFIG=(typeof window!=="undefined"&&window.SUPABASE_CONFIG)?window.SUPABASE_CONFIG:null;
+if(SUPABASE_CONFIG&&SUPABASE_CONFIG.url&&SUPABASE_CONFIG.anonKey&&window.supabase){
+  supabaseClient=window.supabase.createClient(SUPABASE_CONFIG.url,SUPABASE_CONFIG.anonKey);
+}
 
 function loadSettings(){
   try{
@@ -83,6 +90,7 @@ function clearForm(keepSucursal=true){
   $("photoPreview").src="";$("photoPreviewWrap").classList.add("hidden");
   renderFormSelects({sucursal:current,estado:settings.estados[0]||""});
   if(current&&settings.sucursales.includes(current))$("sucursal").value=current;
+  clearDraft();
   $("nombreDispositivo").focus();
 }
 
@@ -94,6 +102,7 @@ function readForm(){
     nombreDispositivo:$("nombreDispositivo").value.trim().toUpperCase(),
     ubicacionCargo:$("ubicacionCargo").value.trim(),
     producto:$("producto").value.trim(),
+    procesador:$("procesador").value.trim(),
     sistemaOperativo:$("sistemaOperativo").value,
     ram:$("ram").value.trim(),
     discoDuro:$("discoDuro").value.trim(),
@@ -102,6 +111,145 @@ function readForm(){
     contrasenaAdmin:$("contrasenaAdmin").value,
     estado:$("estado").value
   }
+}
+
+function saveDraft(){
+  const draft={recordId:$("recordId").value||"",...readForm()};
+  localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));
+}
+
+function clearDraft(){localStorage.removeItem(DRAFT_KEY)}
+
+function extractLabeledValue(text,labelPattern){
+  const pattern=new RegExp(`^\\s*(?:${labelPattern})\\s*[:#-]?\\s*(.+?)\\s*$`,"im");
+  return String(text||"").match(pattern)?.[1]?.trim()||"";
+}
+
+function normalizeCapacity(text){
+  const match=String(text||"").match(/\b(\d+(?:[.,]\d+)?)\s*(TB|GB|GIB|MB|MIB)\b/i);
+  if(!match)return "";
+  const amount=Number(match[1].replace(",","."));
+  const value=Number.isInteger(amount)?String(amount):String(amount);
+  const unit=match[2].toUpperCase().replace("GIB","GB").replace("MIB","MB");
+  return `${value} ${unit}`;
+}
+
+function parseOcrText(text){
+  const source=String(text||"").replace(/\r/g,"");
+  const cleaned=source.replace(/\s+/g," ").trim();
+  const out={};
+  const deviceName=extractLabeledValue(source,"device\\s*name|computer\\s*name|host\\s*name|nombre\\s+(?:del\\s+)?(?:dispositivo|equipo|host)");
+  if(deviceName)out.nombreDispositivo=deviceName.toUpperCase();
+
+  const deviceId=extractLabeledValue(source,"service\\s*tag|asset\\s*tag|serial\\s*(?:number|no\\.?|#)|s\\s*[/\\\\-]?\\s*n|n[uú]mero\\s+(?:de\\s+)?serie|n\\s*[°ºo]?\\s*\\.?\\s*(?:de\\s+)?serie|no\\.?\\s+de\\s+serie|id\\s+(?:del\\s+)?dispositivo|identificador\\s+(?:del\\s+)?dispositivo");
+  if(deviceId)out.idDispositivo=deviceId.toUpperCase();
+
+  const processorPatterns=[
+    /\bIntel(?:\s*\(R\))?\s*(?:Core(?:\s*\(TM\))?\s*)?(?:Ultra\s*)?i[3579]\s*[- ]?\s*\d{3,5}[A-Z]{0,2}(?:\s+CPU)?(?:\s*@\s*[\d.]+\s*GHz)?/i,
+    /\bIntel(?:\s*\(R\))?\s*(?:Pentium|Xeon)\s+[A-Z0-9-]+(?:\s+CPU)?/i,
+    /\bAMD(?:\s+Ryzen)?\s+[3579]\s+\d{4,5}[A-Z]{0,2}(?:\s+CPU)?/i,
+    /\bRyzen\s+[3579]\s+\d{4,5}[A-Z]{0,2}/i
+  ];
+  for(const pattern of processorPatterns){
+    const match=cleaned.match(pattern);
+    if(match){out.procesador=match[0].replace(/\s+/g," ").trim();break;}
+  }
+
+  const ramLine=extractLabeledValue(source,"installed\\s+memory|installed\\s+ram|memory|ram(?:\\s+instalada)?|memoria(?:\\s+instalada)?");
+  const ram=normalizeCapacity(ramLine)||normalizeCapacity(cleaned.match(/\b(?:\d+(?:[.,]\d+)?\s*(?:GB|GIB))\b/i)?.[0]);
+  if(ram)out.ram=ram;
+
+  const diskLine=extractLabeledValue(source,"storage|almacenamiento|disco(?:\\s+duro)?|hard\\s*drive|disk");
+  const diskSource=diskLine||cleaned;
+  const diskMatch=diskSource.match(/\b(SSD|NVMe|HDD)\b\s*(\d+(?:[.,]\d+)?\s*(?:TB|GB|GIB|MB|MIB))?|\b(\d+(?:[.,]\d+)?\s*(?:TB|GB|GIB|MB|MIB))\s*\b(SSD|NVMe|HDD)\b/i);
+  const diskType=(diskMatch?.[1]||diskMatch?.[4]||"").toUpperCase();
+  const diskCapacity=normalizeCapacity(diskMatch?.[2]||diskMatch?.[3]||diskLine);
+  if(diskType||diskLine&&diskCapacity)out.discoDuro=[diskCapacity,diskType].filter(Boolean).join(" ");
+
+  const server=cleaned.match(/\bWindows\s*Server\s*(2016|2019|2022)\b/i);
+  if(server)out.sistemaOperativo=`Windows Server ${server[1]}`;
+  else{
+    const windows=cleaned.match(/\bWindows\s*(11|10|8(?:\.1)?|7)\b(?:\s*([\w.-]+))?/i);
+    if(windows)out.sistemaOperativo=windows[1]==="11"?"W11":windows[1]==="10"?(/ltc/i.test(windows[2]||"")?"W10 LTSC":"W10"):"Otro";
+  }
+
+  const model=extractLabeledValue(source,"model(?:\\s*name)?|modelo(?:\\s+del\\s+equipo)?|product\\s*name|system\\s*model");
+  const knownModel=cleaned.match(/\b(?:OptiPlex|Latitude|ThinkPad|EliteBook|ProBook|Torre|Notebook|Desktop|AIO|Precision|IdeaPad|Vostro|ThinkCentre|ProDesk|ZBook)\s*[A-Z0-9-]*/i)?.[0];
+  if(model)out.producto=model;
+  else if(knownModel)out.producto=knownModel.trim();
+  return out;
+}
+
+async function fillFromOcr(file){
+  if(!window.Tesseract){toast("OCR no está disponible aún. Conéctate a Internet y vuelve a intentarlo.");return;}
+  try{
+    toast("Leyendo la imagen...");
+    const { data } = await window.Tesseract.recognize(file,'eng+spa');
+    const parsed=parseOcrText(data.text||"");
+    const filled=[];
+    const textFields={nombreDispositivo:"nombreDispositivo",idDispositivo:"idDispositivo",producto:"producto",procesador:"procesador",ram:"ram",discoDuro:"discoDuro"};
+    for(const [key,id] of Object.entries(textFields)){
+      const field=$(id);
+      if(parsed[key]&&field&&!field.value.trim()){field.value=parsed[key];filled.push(key);}
+    }
+    const osField=$("sistemaOperativo");
+    if(parsed.sistemaOperativo&&osField&&(osField.value===settings.sistemas[0]||!osField.value)&&Array.from(osField.options).some(option=>option.value===parsed.sistemaOperativo)){
+      osField.value=parsed.sistemaOperativo;filled.push("sistema operativo");
+    }
+    if(filled.length){saveDraft();toast(`Detecté: ${filled.join(", ")}. Revisa los datos antes de guardar.`);}
+    else toast("No se detectaron campos nuevos. Prueba con una foto nítida de la etiqueta o de Información del sistema.");
+  }catch(err){console.error(err);toast("No se pudo leer la imagen. Prueba con una foto más nítida.")}
+}
+
+async function syncRecordToSupabase(record){
+  if(!supabaseClient || !SUPABASE_CONFIG || !SUPABASE_CONFIG.url || !SUPABASE_CONFIG.anonKey){return false;}
+  try{
+    const payload={
+      sucursal:record.sucursal||null,
+      descripcion:record.descripcion||null,
+      id_dispositivo:record.idDispositivo||null,
+      nombre_dispositivo:record.nombreDispositivo||null,
+      ubicacion_cargo:record.ubicacionCargo||null,
+      producto:record.producto||null,
+      procesador:record.procesador||null,
+      sistema_operativo:record.sistemaOperativo||null,
+      ram:record.ram||null,
+      disco_duro:record.discoDuro||null,
+      contrasena_inicio:record.contrasenaInicio||null,
+      usuario_admin:record.usuarioAdmin||null,
+      contrasena_admin:record.contrasenaAdmin||null,
+      estado:record.estado||null,
+      updated_at:new Date().toISOString()
+    };
+    const { error } = await supabaseClient.from("equipos").insert(payload);
+    if(error){throw error;}
+    return true;
+  }catch(err){console.error(err);return false;}
+}
+
+function restoreDraft(){
+  try{
+    const draft=JSON.parse(localStorage.getItem(DRAFT_KEY)||"null");
+    if(!draft)return;
+    renderFormSelects({sucursal:draft.sucursal||"",descripcion:draft.descripcion||"",sistemaOperativo:draft.sistemaOperativo||"",estado:draft.estado||settings.estados[0]||""});
+    $("recordId").value=draft.recordId||"";
+    $("sucursal").value=draft.sucursal||settings.sucursales[0]||"";
+    $("descripcion").value=draft.descripcion||settings.descripciones[0]||"";
+    $("idDispositivo").value=draft.idDispositivo||"";
+    $("nombreDispositivo").value=draft.nombreDispositivo||"";
+    $("ubicacionCargo").value=draft.ubicacionCargo||"";
+    $("producto").value=draft.producto||"";
+    $("procesador").value=draft.procesador||"";
+    $("sistemaOperativo").value=draft.sistemaOperativo||"";
+    $("ram").value=draft.ram||"";
+    $("discoDuro").value=draft.discoDuro||"";
+    $("contrasenaInicio").value=draft.contrasenaInicio||"";
+    $("usuarioAdmin").value=draft.usuarioAdmin||"";
+    $("contrasenaAdmin").value=draft.contrasenaAdmin||"";
+    $("estado").value=draft.estado||settings.estados[0]||"";
+    $("formTitle").textContent=$("recordId").value?"Editar equipo":"Registrar equipo";
+    $("cancelEdit").classList.toggle("hidden",!$("recordId").value);
+  }catch(err){console.error(err)}
 }
 
 function showView(name){
@@ -125,11 +273,17 @@ $("equipmentForm").addEventListener("submit",async e=>{
   try{
     if(id){const old=await getRecord(id);record.id=id;record.createdAt=old.createdAt||now;await putRecord(record);toast("Equipo actualizado.")}
     else{record.createdAt=now;await addRecord(record);toast("Equipo guardado.")}
+    if(supabaseClient){await syncRecordToSupabase(values);}
     const branch=values.sucursal;
     clearForm(true);
     if(settings.sucursales.includes(branch))$("sucursal").value=branch;
     await updateSummary();
   }catch(err){console.error(err);toast("No se pudo guardar el registro.")}
+});
+
+["sucursal","descripcion","idDispositivo","nombreDispositivo","ubicacionCargo","producto","procesador","sistemaOperativo","ram","discoDuro","contrasenaInicio","usuarioAdmin","contrasenaAdmin","estado"].forEach(id=>{
+  const el=$(id);
+  if(el){el.addEventListener("input",saveDraft);el.addEventListener("change",saveDraft)}
 });
 
 $("cancelEdit").addEventListener("click",()=>clearForm(true));
@@ -139,6 +293,7 @@ $("photoInput").addEventListener("change",()=>{
   selectedPhoto=f;existingPhoto=null;
   $("photoPreview").src=URL.createObjectURL(f);
   $("photoPreviewWrap").classList.remove("hidden");
+  fillFromOcr(f);
 });
 $("removePhoto").addEventListener("click",()=>{
   selectedPhoto=null;existingPhoto=null;$("photoInput").value="";
@@ -150,7 +305,7 @@ async function editRecord(id){
   $("recordId").value=r.id;$("formTitle").textContent=`Editar: ${r.nombreDispositivo}`;$("cancelEdit").classList.remove("hidden");
   $("sucursal").value=r.sucursal;$("descripcion").value=r.descripcion;$("idDispositivo").value=r.idDispositivo||"";
   $("nombreDispositivo").value=r.nombreDispositivo||"";$("ubicacionCargo").value=r.ubicacionCargo||"";
-  $("producto").value=r.producto||"";$("sistemaOperativo").value=r.sistemaOperativo||"";
+  $("producto").value=r.producto||"";$("procesador").value=r.procesador||"";$("sistemaOperativo").value=r.sistemaOperativo||"";
   $("ram").value=r.ram||"";$("discoDuro").value=r.discoDuro||"";
   $("contrasenaInicio").value=r.contrasenaInicio||"";$("usuarioAdmin").value=r.usuarioAdmin||"";
   $("contrasenaAdmin").value=r.contrasenaAdmin||"";$("estado").value=r.estado||"";
@@ -276,28 +431,32 @@ function zipStore(files){
   return concatBytes(body,cen,end)
 }
 function makeXlsx(records){
-  const headers=["N°","Descripcion","ID dispositivo","Nombre Dispositivo","Ubicación/cargo","Producto","Sistema operativo","Acopio","RAM","Disco Duro","Contraseña Inicio","Usuario Admin","Contraseña Admin","Estado","Fecha registro","Última actualización"];
+  const headers=["N°","Descripcion","ID dispositivo","Nombre Dispositivo","Ubicación/cargo","Producto","Procesador","Sistema operativo","Acopio","RAM","Disco Duro","Contraseña Inicio","Usuario Admin","Contraseña Admin","Estado","Fecha registro","Última actualización"];
   const rows=[headers,...records.map((r,i)=>[
-    i+1,r.descripcion,r.idDispositivo,r.nombreDispositivo,r.ubicacionCargo,r.producto,r.sistemaOperativo,r.sucursal,r.ram,r.discoDuro,r.contrasenaInicio,r.usuarioAdmin,r.contrasenaAdmin,r.estado,dateFmt(r.createdAt),dateFmt(r.updatedAt)
+    i+1,r.descripcion,r.idDispositivo,r.nombreDispositivo,r.ubicacionCargo,r.producto,r.procesador||"",r.sistemaOperativo,r.sucursal,r.ram,r.discoDuro,r.contrasenaInicio,r.usuarioAdmin,r.contrasenaAdmin,r.estado,dateFmt(r.createdAt),dateFmt(r.updatedAt)
   ])];
   const sheetRows=rows.map((row,ri)=>{
     const cells=row.map((v,ci)=>{
-      const ref=colName(ci+1)+(ri+1),text=xmlEsc(v);
-      return `<c r="${ref}" t="inlineStr"><is><t>${text}</t></is></c>`
+      const ref=colName(ci+1)+(ri+1),text=xmlEsc(v),style=ri===0?1:(ri%2===0?2:3);
+      return `<c r="${ref}" s="${style}" t="inlineStr"><is><t>${text}</t></is></c>`
     }).join("");
-    return `<row r="${ri+1}">${cells}</row>`
+    return `<row r="${ri+1}"${ri===0?' ht="30" customHeight="1"':' ht="24" customHeight="1"'}>${cells}</row>`
   }).join("");
-  const sheet=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:P${rows.length}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetData>${sheetRows}</sheetData></worksheet>`;
+  const widths=[7,18,18,28,24,24,25,24,18,12,20,24,22,24,20,22,22];
+  const cols=widths.map((width,i)=>`<col min="${i+1}" max="${i+1}" width="${width}" customWidth="1"/>`).join("");
+  const sheet=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:Q${rows.length}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${cols}</cols><sheetData>${sheetRows}</sheetData><autoFilter ref="A1:Q${rows.length}"/></worksheet>`;
   const workbook=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Inventario" sheetId="1" r:id="rId1"/></sheets></workbook>`;
-  const rels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`;
+  const rels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
   const rootrels=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
-  const content=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`;
+  const styles=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos Display"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF17324D"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF1F5F7"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top/><bottom style="thin"><color rgb="FFD9E2E8"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="3" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  const content=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`;
   const bytes=zipStore([
     {name:"[Content_Types].xml",data:content},
     {name:"_rels/.rels",data:rootrels},
     {name:"xl/workbook.xml",data:workbook},
     {name:"xl/_rels/workbook.xml.rels",data:rels},
-    {name:"xl/worksheets/sheet1.xml",data:sheet}
+    {name:"xl/worksheets/sheet1.xml",data:sheet},
+    {name:"xl/styles.xml",data:styles}
   ]);
   return new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"})
 }
@@ -309,6 +468,67 @@ $("exportExcel").addEventListener("click",async()=>{
 
 function blobToDataURL(blob){return new Promise((res,rej)=>{if(!blob)return res(null);const r=new FileReader();r.onload=()=>res(r.result);r.onerror=()=>rej(r.error);r.readAsDataURL(blob)})}
 function dataURLToBlob(data){if(!data)return null;const [meta,b]=data.split(",");const mime=(meta.match(/data:(.*?);base64/)||[])[1]||"application/octet-stream";const bin=atob(b),u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return new Blob([u],{type:mime})}
+
+function normalizeHeaderToken(v){return String(v ?? "").trim().toLowerCase().replace(/[^a-z0-9]/g,"")}
+function cellValue(row,keyList){
+  for(const key of keyList){
+    const token=normalizeHeaderToken(key);
+    if(Object.prototype.hasOwnProperty.call(row,token)){
+      const value=row[token];
+      if(value!==null&&value!==undefined&&String(value).trim()!=="")return String(value).trim();
+    }
+  }
+  return "";
+}
+function excelRowToRecord(rawRow){
+  const row={};Object.entries(rawRow||{}).forEach(([k,v])=>{row[normalizeHeaderToken(k)]=v});
+  const nombreDispositivo=cellValue(row,["nombredispositivo","nombre","nombrecomputador","nombreequipo"]);
+  if(!nombreDispositivo) return null;
+  return {
+    sucursal:cellValue(row,["acopio","sucursal"]),
+    descripcion:cellValue(row,["descripcion","descripcin"]),
+    idDispositivo:cellValue(row,["iddispositivo","id"]),
+    nombreDispositivo,
+    ubicacionCargo:cellValue(row,["ubicacioncargo","ubicacion","cargo"]),
+    producto:cellValue(row,["producto","modelo","model"]),
+    procesador:cellValue(row,["procesador","cpu","processor"]),
+    sistemaOperativo:cellValue(row,["sistemaoperativo","sistema","os"]),
+    ram:cellValue(row,["ram","memoriaram"]),
+    discoDuro:cellValue(row,["discoduro","disco","ssd","almacenamiento"]),
+    contrasenaInicio:cellValue(row,["contrasenainicio","passwordinicio"]),
+    usuarioAdmin:cellValue(row,["usuarioadmin","usuario","adminuser"]),
+    contrasenaAdmin:cellValue(row,["contrasenaadmin","passwordadmin"]),
+    estado:cellValue(row,["estado","status"])
+  };
+}
+
+$("importExcel").addEventListener("change",async e=>{
+  const file=e.target.files?.[0];if(!file)return;
+  try{
+    if(!window.XLSX) throw new Error("No está disponible la lectura de Excel.");
+    const buffer=await file.arrayBuffer();
+    const workbook=XLSX.read(buffer,{type:"array"});
+    const sheet=workbook.Sheets[workbook.SheetNames[0]];
+    const rows=XLSX.utils.sheet_to_json(sheet,{defval:"",raw:false});
+    const records=[];
+    rows.forEach(r=>{const rec=excelRowToRecord(r);if(rec)records.push(rec)});
+    if(!records.length) throw new Error("No se encontraron filas válidas.");
+    const replace=confirm("¿Reemplazar el inventario actual?\nAceptar = reemplazar\nCancelar = agregar");
+    if(replace)await clearRecords();
+    for(const record of records){
+      await addRecord({
+        ...record,
+        createdAt:new Date().toISOString(),
+        updatedAt:new Date().toISOString(),
+        photoBlob:null
+      });
+    }
+    e.target.value="";
+    await renderRecords();
+    await updateSummary();
+    toast(`Se importaron ${records.length} equipos desde Excel.`);
+  }catch(err){console.error(err);e.target.value="";toast("Excel inválido o sin registros compatibles.")}
+});
 
 $("exportBackup").addEventListener("click",async()=>{
   const records=await allRecords();if(!records.length){toast("No hay registros.");return}
@@ -358,6 +578,21 @@ document.addEventListener("click",e=>{
 window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();installEvent=e;$("installBtn").classList.remove("hidden")});
 $("installBtn").addEventListener("click",async()=>{if(!installEvent)return;installEvent.prompt();await installEvent.userChoice;installEvent=null;$("installBtn").classList.add("hidden")});
 
-if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js").catch(console.error));
+if("serviceWorker" in navigator){
+  window.addEventListener("load",async()=>{
+    try{
+      const reg=await navigator.serviceWorker.register("./sw.js");
+      reg.addEventListener("updatefound",()=>{
+        const worker=reg.installing;
+        if(!worker)return;
+        worker.addEventListener("statechange",()=>{
+          if(worker.state==="activated" && navigator.serviceWorker.controller){
+            window.location.reload();
+          }
+        });
+      });
+    }catch(err){console.error(err)}
+  });
+}
 
-(async()=>{try{await openDB();renderFormSelects({estado:settings.estados[0]||""});renderSettings();await updateSummary()}catch(e){console.error(e);alert("No se pudo iniciar el almacenamiento local.")}})();
+(async()=>{try{await openDB();renderFormSelects({estado:settings.estados[0]||""});renderSettings();restoreDraft();await updateSummary()}catch(e){console.error(e);alert("No se pudo iniciar el almacenamiento local.")}})();

@@ -21,7 +21,7 @@
   <button id="installBtn" class="button secondary hidden" type="button">Instalar</button>
 </header>
 
-<nav class="nav">
+<nav class="nav" aria-label="Navegación principal">
   <button class="nav-btn active" data-view="registro" type="button">Registrar</button>
   <button class="nav-btn" data-view="inventario" type="button">Inventario</button>
   <button class="nav-btn" data-view="configuracion" type="button">Configuración</button>
@@ -47,6 +47,10 @@
       <form id="equipmentForm" autocomplete="off">
         <input type="hidden" id="recordId">
 
+        <div class="form-section-heading">
+          <span class="section-index">01</span>
+          <div><h3>Identificación</h3><p>Datos para reconocer y ubicar el equipo.</p></div>
+        </div>
         <div class="grid two">
           <label class="field">
             <span>Sucursal *</span>
@@ -80,35 +84,46 @@
           </label>
         </div>
 
+        <div class="form-section-heading">
+          <span class="section-index">02</span>
+          <div><h3>Características técnicas</h3><p>Configuración y estado del dispositivo.</p></div>
+        </div>
         <div class="grid two">
           <label class="field">
-            <span>Sistema operativo</span>
-            <select id="sistemaOperativo"></select>
+            <span>Procesador</span>
+            <input id="procesador" placeholder="Ej. Intel Core i5-10400">
           </label>
           <label class="field">
             <span>RAM</span>
             <input id="ram" placeholder="Ej. 8 GB">
           </label>
         </div>
-
         <div class="grid two">
+          <label class="field">
+            <span>Sistema operativo</span>
+            <select id="sistemaOperativo"></select>
+          </label>
           <label class="field">
             <span>Disco duro / SSD</span>
             <input id="discoDuro" placeholder="Ej. SSD 477 GB">
           </label>
+        </div>
+
+        <div class="grid two">
           <label class="field">
             <span>Estado</span>
             <select id="estado"></select>
           </label>
+          <span></span>
         </div>
 
         <details class="credentials">
-          <summary>Credenciales del equipo</summary>
-          <p class="warning">Estos datos se almacenan localmente en este teléfono. No se envían a GitHub. Evita compartir el respaldo si contiene contraseñas.</p>
+          <summary><span>Credenciales</span><span class="summary-hint">Opcional · visible al ingresar</span></summary>
+          <p class="warning">Se guardan sin cifrar en este dispositivo y, si configuraste Supabase, también se sincronizan allí. El Excel las incluye visibles; comparte esos datos solo con personas autorizadas.</p>
           <div class="grid two">
             <label class="field">
               <span>Contraseña de inicio</span>
-              <input id="contrasenaInicio" type="password" autocomplete="off">
+              <input id="contrasenaInicio" type="text" autocomplete="off">
             </label>
             <label class="field">
               <span>Usuario administrador</span>
@@ -117,13 +132,13 @@
           </div>
           <label class="field">
             <span>Contraseña administrador</span>
-            <input id="contrasenaAdmin" type="password" autocomplete="off">
+            <input id="contrasenaAdmin" type="text" autocomplete="off">
           </label>
         </details>
 
         <details class="photo-section">
           <summary>Fotografía del equipo (opcional)</summary>
-          <p class="muted">Puedes fotografiar la etiqueta, el equipo o la pantalla con información del sistema.</p>
+          <p class="muted">La lectura intenta completar nombre, ID o Service Tag, modelo, procesador, RAM, disco y Windows. Usa una foto nítida de la etiqueta o de Información del sistema; revisa los datos antes de guardar. Requiere Internet para procesar la imagen.</p>
           <label class="button secondary file-button">
             Tomar fotografía
             <input id="photoInput" type="file" accept="image/*" capture="environment">
@@ -161,9 +176,10 @@
     <section class="panel">
       <div class="eyebrow">EXPORTACIÓN</div>
       <h2>Entregar inventario</h2>
-      <p class="muted">El botón Excel genera un archivo .xlsx real, con todas las columnas del levantamiento. Las fotografías no se insertan dentro del Excel; se mantienen en el respaldo local.</p>
+      <p class="muted">Excel listo para entregar: encabezados destacados, filtros y columnas organizadas. Las credenciales registradas se incluyen visibles; las fotografías se conservan solo en el respaldo local.</p>
       <div class="button-grid">
         <button id="exportExcel" class="button primary" type="button">Exportar Excel (.xlsx)</button>
+        <label class="button secondary file-button">Importar Excel (.xlsx)<input id="importExcel" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"></label>
         <button id="exportBackup" class="button secondary" type="button">Crear respaldo completo</button>
         <label class="button secondary file-button">Importar respaldo<input id="importBackup" type="file" accept=".json,application/json"></label>
         <button id="deleteAll" class="button danger" type="button">Borrar inventario</button>
@@ -228,6 +244,10 @@
 </div>
 
 <div id="toast" class="toast"></div>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="./supabase-config.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>
